@@ -1,0 +1,131 @@
+#!/usr/bin/env python
+import sys
+import os
+import xattr
+import uuid
+import re
+
+CHANGELOG_SEARCH_MAX_TRY = 21
+DEC_CTIME_START = 5
+ROOT_GFID = "00000000-0000-0000-0000-000000000001"
+
+
+def output_not_found(gfid):
+    # Write GFID to stderr
+    sys.stderr.write("%s\n" % gfid)
+
+
+def output_success(path):
+    # Write converted Path to Stdout
+    sys.stdout.write("%s\n" % path)
+
+
+def find_path_from_changelog(fd, gfid):
+    """
+    In given Changelog File, finds using following pattern
+    <T><GFID>\x00<TYPE>\x00<MODE>\x00<UID>\x00<GID>\x00<PARGFID>/<BASENAME>
+    Pattern search finds PARGFID and BASENAME, Convert PARGFID to Path
+    Using readlink and add basename to form Full path.
+    """
+    content = fd.read()
+
+    pattern = "E%s" % gfid
+    pattern += "\x00(3|23)\x00\d+\x00\d+\x00\d+\x00([^\x00]+)/([^\x00]+)"
+    pat = re.compile(pattern)
+    match = pat.search(content)
+
+    if match:
+        pgfid = match.group(2)
+        basename = match.group(3)
+        if pgfid == ROOT_GFID:
+            return os.path.join("./", basename)
+        else:
+            ppath = os.path.join(".glusterfs", pgfid[0:2], pgfid[2:4], pgfid)
+            op = os.path.join(os.readlink(ppath), basename)
+            return op.replace("../../00/00/%s/" % ROOT_GFID, "./")
+
+    return None
+
+
+def gfid_to_path(gfid):
+    """
+    Try readlink, if it is directory it succeeds.
+    Get ctime of the GFID file, Decrement by 5 sec
+    Search for Changelog filename, Since Changelog file generated
+    every 15 sec, Search and get immediate next Changelog after the file
+    Creation. Get the Path by searching in Changelog file.
+    Get the resultant file's GFID and Compare with the input, If these
+    GFIDs are different then Some thing is changed(May be Rename)
+    """
+    gfid = gfid.strip()
+    gpath = os.path.join(".glusterfs", gfid[0:2], gfid[2:4], gfid)
+    try:
+        output_success(os.readlink(gpath))
+        return
+    except OSError:
+        # Not an SymLink
+        pass
+
+    try:
+        ctime = int(os.stat(gpath).st_ctime)
+        ctime -= DEC_CTIME_START
+    except (OSError, IOError):
+        output_not_found(gfid)
+        return
+
+    path = None
+    found_changelog = False
+
+    for i in range(CHANGELOG_SEARCH_MAX_TRY):
+        cl = os.path.join(".glusterfs/changelogs", "CHANGELOG.%s" % ctime)
+
+        try:
+            with open(cl, "rb") as f:
+                found_changelog = True
+                path = find_path_from_changelog(f, gfid)
+
+            break
+        except (IOError, OSError):
+            ctime += 1
+
+    if not found_changelog:
+        output_not_found(gfid)
+        return
+
+    if not path:
+        output_not_found(gfid)
+        return
+    gfid1 = str(uuid.UUID(bytes=xattr.get(path, "trusted.gfid")))
+    if gfid != gfid1:
+        output_not_found(gfid)
+        return
+
+    output_success(path)
+
+
+def main():
+    num_arguments = 3
+    if not sys.stdin.isatty():
+        num_arguments = 2
+
+    if len(sys.argv) != num_arguments:
+        sys.stderr.write("Invalid arguments\nUsage: "
+                         "%s <BRICK_PATH> <GFID_FILE>\n" % sys.argv[0])
+        sys.exit(1)
+
+    path = sys.argv[1]
+
+    os.chdir(path)
+
+    if sys.stdin.isatty():
+        gfid_list = os.path.abspath(sys.argv[2])
+        with open(gfid_list) as f:
+            for gfid in f:
+                gfid_to_path(gfid)
+    else:
+        for gfid in sys.stdin:
+            gfid_to_path(gfid)
+
+
+if __name__ == "__main__":
+    main()
