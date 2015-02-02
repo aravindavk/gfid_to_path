@@ -5,9 +5,10 @@ import xattr
 import uuid
 import re
 
-CHANGELOG_SEARCH_MAX_TRY = 17
+CHANGELOG_SEARCH_MAX_TRY = 31
 DEC_CTIME_START = 0
 ROOT_GFID = "00000000-0000-0000-0000-000000000001"
+MAX_NUM_CHANGELOGS_TRY = 2
 
 
 def output_not_found(gfid):
@@ -89,15 +90,18 @@ def gfid_to_path(gfid):
 
     path = None
     found_changelog = False
-
+    changelog_parse_try = 0
     for i in range(CHANGELOG_SEARCH_MAX_TRY):
         cl = os.path.join(".glusterfs/changelogs", "CHANGELOG.%s" % ctime)
 
         try:
             with open(cl, "rb") as f:
+                changelog_parse_try += 1
                 found_changelog = True
                 path = find_path_from_changelog(f, gfid)
-
+                if not path and changelog_parse_try < MAX_NUM_CHANGELOGS_TRY:
+                    ctime += 1
+                    continue
             break
         except (IOError, OSError):
             ctime += 1
