@@ -5,8 +5,8 @@ import xattr
 import uuid
 import re
 
-CHANGELOG_SEARCH_MAX_TRY = 21
-DEC_CTIME_START = 5
+CHANGELOG_SEARCH_MAX_TRY = 17
+DEC_CTIME_START = 0
 ROOT_GFID = "00000000-0000-0000-0000-000000000001"
 
 
@@ -18,6 +18,20 @@ def output_not_found(gfid):
 def output_success(path):
     # Write converted Path to Stdout
     sys.stdout.write("%s\n" % path)
+
+
+def full_dir_path(gfid):
+    out_path = ""
+    while True:
+        path = os.path.join(".glusterfs", gfid[0:2], gfid[2:4], gfid)
+        path_readlink = os.readlink(path)
+        pgfid = os.path.dirname(path_readlink)
+        out_path = os.path.join(os.path.basename(path_readlink), out_path)
+        if pgfid == "../../00/00/%s" % ROOT_GFID:
+            out_path = os.path.join("./", out_path)
+            break
+        gfid = os.path.basename(pgfid)
+    return out_path
 
 
 def find_path_from_changelog(fd, gfid):
@@ -40,9 +54,9 @@ def find_path_from_changelog(fd, gfid):
         if pgfid == ROOT_GFID:
             return os.path.join("./", basename)
         else:
-            ppath = os.path.join(".glusterfs", pgfid[0:2], pgfid[2:4], pgfid)
-            op = os.path.join(os.readlink(ppath), basename)
-            return op.replace("../../00/00/%s/" % ROOT_GFID, "./")
+            full_path_parent = full_dir_path(pgfid)
+            if full_path_parent:
+                return os.path.join(full_path_parent, basename)
 
     return None
 
@@ -60,7 +74,7 @@ def gfid_to_path(gfid):
     gfid = gfid.strip()
     gpath = os.path.join(".glusterfs", gfid[0:2], gfid[2:4], gfid)
     try:
-        output_success(os.readlink(gpath))
+        output_success(full_dir_path(gfid))
         return
     except OSError:
         # Not an SymLink
